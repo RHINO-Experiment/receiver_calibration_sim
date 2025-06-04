@@ -109,15 +109,16 @@ def generate_one_over_f_time_series(length, delta_t, white_noise_level, f_knee, 
 def total_radiometric_power(source, receiver):
     admitance = np.sqrt(1 - np.abs(receiver.reflection_coefficients)**2) / (1 - receiver.reflection_coefficients*source.reflection_coefficients)
 
-    source_term = source.temperatures * (admitance**2) * (1-np.abs(source.reflection_coefficients)**2)
+    source_term = source.temperatures * (np.abs(admitance)**2) * (1-np.abs(source.reflection_coefficients)**2)
 
-    uncorelated_term = receiver.t_unc * (admitance**2) * (source.reflection_coefficients**2)
+    uncorelated_term = receiver.t_unc * (np.abs(admitance)**2) * (source.reflection_coefficients**2)
 
     sin_term = np.abs(admitance)*np.abs(source.reflection_coefficients) * receiver.t_sin * np.sin(np.angle(admitance*source.reflection_coefficients))
 
     cos_term = np.abs(admitance)*np.abs(source.reflection_coefficients) * receiver.t_cos * np.cos(np.angle(admitance*source.reflection_coefficients))
 
-    return source_term + uncorelated_term + cos_term + sin_term + receiver.t_n
+    total_power = source_term + uncorelated_term + cos_term + sin_term + receiver.t_n
+    return np.abs(total_power, dtype='float64')
 
 
 def add_radiometric_noise(radiometric_power, multiplier):
@@ -202,8 +203,23 @@ class Source:
         self.frequencies = band_frequencies
         return
     
-
 class TerminatedCable:
+    def __init__(self, physical_temperature, frequencies, termination='Open', epsilon=1,cable_length=10, mag_s12=1, termination_reflection_coeffs=1):
+        self.termination_type = termination
+        c = 299792458
+        self.frequencies = frequencies
+        self.temperatures = physical_temperature * np.ones(len(self.frequencies))
+        if termination=='Open':
+            self.reflection_coefficients = (mag_s12**2) * np.exp(-2j*self.frequencies*cable_length*epsilon/c)
+        elif termination=='Shorted':
+            self.reflection_coefficients = -(mag_s12**2) * np.exp(-2j*self.frequencies*cable_length*epsilon/c)
+        else:
+            self.reflection_coefficients = (mag_s12**2) * np.exp(-2j*self.frequencies*cable_length*epsilon/c)* np.exp(-1j*np.pi) * termination_reflection_coeffs
+
+        pass
+    
+
+class TerminatedCableOld:
     def __init__(self, termination='load', cable_length=30, physical_temperature=300, cable_s_params=[], termination_impedance=50, reference_impedance=50,
                  cable_temperature=300):
         self.termination = termination
@@ -374,7 +390,7 @@ class TimeStreamGenerator:
 
     def generate_simulated_data(self, obs_source, cw_source, receiver, save_data=False, savepath='', title='',switching=False, 
                                           switch_sources=[], switch_obs_fraction=[1/3,1/3,1/3], switch_cycle_period=60,
-                                          power_meter=None, plot_spectra=True, save_into_object = True):
+                                          power_meter=None, plot_spectra=True, save_into_object = True, return_list=False):
         """
         Runs the simulation and returns measured values into the initiated object if save_into_object=True.
 
@@ -384,7 +400,7 @@ class TimeStreamGenerator:
 
 
         """
-
+        print('   generating data')
         if receiver.beta == 0:
             system_gains = 1 + generate_F_psd(f_k=receiver.characteristic_frequency, alpha=receiver.alpha, receiver_sample_rate=receiver.sample_rate,
                                               n_times=self.n_frames, tau=self.delta_t, n_channels=receiver.n_freq_channels) # n_frames
@@ -414,7 +430,7 @@ class TimeStreamGenerator:
                                                   integration_time=self.integration_time)
         
         for i in range(np.ceil(int(self.n_integrations))+1): # mind the ceiling and the fact this isnt an integer. See how it works with indices
-            print(i)
+            #print(i)
             if switching:
                 switch_index = switches_list[i]
                 obs_source = switch_sources[switch_index]
@@ -473,7 +489,7 @@ class TimeStreamGenerator:
 
                 data.create_dataset('Spectra', data=integrated_spectra, dtype=integrated_spectra.dtype)
                 data.create_dataset('Times', data=spectra_times, dtype=spectra_times.dtype)
-                data.create_dataset('Frequencies_MHz', data=obs_freqs_mhz, dtype=obs_freqs_mhz)
+                data.create_dataset('Frequencies_MHz', data=obs_freqs_mhz, dtype=obs_freqs_mhz.dtype)
 
                 if switching:
                     data.create_dataset('Switch List', data=switches_list, dtype=switches_list.dtype)
@@ -513,15 +529,83 @@ class TimeStreamGenerator:
         print(self.n_frames, ' - nframes')
         print(integrated_spectra.shape, ' - integrated spectra')
 
-        return
+        if return_list:
+            rt_list = []
+            rt_list.append(system_gains)
+            rt_list.append(cw_amplitudes)
+            rt_list.append(integrated_spectra)
+            rt_list.append(spectra_times)
+            rt_list.append(frame_times)
+            rt_list.append(obs_freqs_mhz)
+            if switching and (power_meter is not None):
+                rt_list.append(switches_list)
+                rt_list.append(pm_cw_measurements)
+                rt_list.append(pm_gains)
+                d = {'receiver_gains':0,
+                     'cw_amplitudes':1,
+                     'integrated_spectra':2,
+                     'times':3,
+                     'frame_times':4,
+                     'frequencies_mhz':5,
+                     'switch_list':6,
+                     'pm_measurements':7,
+                     'pm_gains':8,
+                     'dictionary':9}
+                rt_list.append(d)
+                return rt_list
+            
+            elif switching:
+                rt_list.append(switches_list)
+                rt_list.append(pm_cw_measurements)
+                rt_list.append(pm_gains)
+                d = {'receiver_gains':0,
+                     'cw_amplitudes':1,
+                     'integrated_spectra':2,
+                     'times':3,
+                     'frame_times':4,
+                     'frequencies_mhz':5,
+                     'switch_list':6,
+                     'dictionary':7}
+                rt_list.append(d)
+                return rt_list
+            
+            elif power_meter is not None:
+                rt_list.append(pm_cw_measurements)
+                rt_list.append(pm_gains)
+                d = {'receiver_gains':0,
+                     'cw_amplitudes':1,
+                     'integrated_spectra':2,
+                     'times':3,
+                     'frame_times':4,
+                     'frequencies_mhz':5,
+                     'pm_measurements':6,
+                     'pm_gains':7,
+                     'dictionary':8}
+                rt_list.append(d)
+                return rt_list
+            
+            else:
+                d = {'receiver_gains':0,
+                     'cw_amplitudes':1,
+                     'integrated_spectra':2,
+                     'times':3,
+                     'frame_times':4,
+                     'frequencies_mhz':5,
+                     'dictionary':6}
+                rt_list.append(d)
+                return rt_list
+
+
+        pass
     
     def generate_simulated_data_restricted_gains(self, obs_source, cw_source, receiver, save_data=False, savepath='', title='',switching=False, 
                                           switch_sources=[], switch_obs_fraction=[1/3,1/3,1/3], switch_cycle_period=60,
-                                          power_meter=None, plot_spectra=True, save_into_object = True):
+                                          power_meter=None, plot_spectra=True, save_into_object = True, return_list=False):
         """
         Operates in the same way as generate_simulated_data but with the gains applied to each integration so that
         longer simulated times can be ran.
         """
+        print('   generating data')
         n_ints = int(np.ceil(self.n_integrations))
         dt_int = self.integration_time
         if receiver.beta == 0:
@@ -616,7 +700,7 @@ class TimeStreamGenerator:
 
                 data.create_dataset('Spectra', data=integrated_spectra, dtype=integrated_spectra.dtype)
                 data.create_dataset('Times', data=spectra_times, dtype=spectra_times.dtype)
-                data.create_dataset('Frequencies_MHz', data=obs_freqs_mhz, dtype=obs_freqs_mhz)
+                data.create_dataset('Frequencies_MHz', data=obs_freqs_mhz, dtype=obs_freqs_mhz.dtype)
 
                 if switching:
                     data.create_dataset('Switch List', data=switches_list, dtype=switches_list.dtype)
@@ -638,6 +722,8 @@ class TimeStreamGenerator:
                 self.pm_measurements = pm_cw_measurements
                 self.pm_gains = pm_gains
 
+        
+
         if plot_spectra:
             plt.imshow(10*np.log10(integrated_spectra), aspect='auto', extent=extent)
             plt.ylabel('Time [s]')
@@ -655,43 +741,124 @@ class TimeStreamGenerator:
         print(self.n_integrations, ' - n_integrations')
         print(self.n_frames, ' - nframes')
         print(integrated_spectra.shape, ' - integrated spectra')
+        
+        if return_list:
+            rt_list = []
+            rt_list.append(system_gains)
+            rt_list.append(cw_amplitudes)
+            rt_list.append(integrated_spectra)
+            rt_list.append(spectra_times)
+            rt_list.append(frame_times)
+            rt_list.append(obs_freqs_mhz)
+            if switching and (power_meter is not None):
+                rt_list.append(switches_list)
+                rt_list.append(pm_cw_measurements)
+                rt_list.append(pm_gains)
+                d = {'receiver_gains':0,
+                     'cw_amplitudes':1,
+                     'integrated_spectra':2,
+                     'times':3,
+                     'frame_times':4,
+                     'frequencies_mhz':5,
+                     'switch_list':6,
+                     'pm_measurements':7,
+                     'pm_gains':8,
+                     'dictionary':9}
+                rt_list.append(d)
+                return rt_list
+            
+            elif switching:
+                rt_list.append(switches_list)
+                rt_list.append(pm_cw_measurements)
+                rt_list.append(pm_gains)
+                d = {'receiver_gains':0,
+                     'cw_amplitudes':1,
+                     'integrated_spectra':2,
+                     'times':3,
+                     'frame_times':4,
+                     'frequencies_mhz':5,
+                     'switch_list':6,
+                     'dictionary':7}
+                rt_list.append(d)
+                return rt_list
+            
+            elif power_meter is not None:
+                rt_list.append(pm_cw_measurements)
+                rt_list.append(pm_gains)
+                d = {'receiver_gains':0,
+                     'cw_amplitudes':1,
+                     'integrated_spectra':2,
+                     'times':3,
+                     'frame_times':4,
+                     'frequencies_mhz':5,
+                     'pm_measurements':6,
+                     'pm_gains':7,
+                     'dictionary':8}
+                rt_list.append(d)
+                return rt_list
+            
+            else:
+                d = {'receiver_gains':0,
+                     'cw_amplitudes':1,
+                     'integrated_spectra':2,
+                     'times':3,
+                     'frame_times':4,
+                     'frequencies_mhz':5,
+                     'dictionary':6}
+                rt_list.append(d)
+                return rt_list
 
-        return
+        pass
 
+    def read_in_from_h5py(self, filepath):
+        with h5py.File(filepath, mode='r') as file:
+            simulation_params = file['simulation_params']
+            data = file['data']
 
+            self.receiver_gains = simulation_params['Receiver_Gains'][()]
+            self.cw_amplitudes = simulation_params['CW_Amplitudes'][()]
+            self.frame_times = simulation_params['Frame_Times'][()]
 
+            self.integrated_spectra = data['Spectra'][()]
+            self.times = data['Times'][()]
+            self.frequencies_mhz = data['Frequencies_MHz'][()]
 
+            try:
+                self.switch_list = data['Switch List']
+            except:
+                print('No Switching')
+            try:
+                self.pm_measurements = data['PM_Measurements'][()]
+                self.pm_gains = simulation_params['PM_Gains'][()]
+            except:
+                print('No Powermeter Measurement')
+        pass
 
 
 
 if __name__ == "__main__":
     receiver = SDR_Receiver(characteristic_frequency=50,  alpha=2, centre_frequency=70e6, n_freq_channels=2**12, sample_rate=20e6,
-                            t_unc=20, t_sin=9, t_cos=10, t_n=200, reflection_coefficients=0.5, window_function='Blackman', beta=0.0)
+                            t_unc=20, t_sin=20, t_cos=100, t_n=200, reflection_coefficients=0.5, window_function='Blackman', beta=0.0)
     
-    target = Source(300, 0, frequencies=receiver.frequencies)
+    target = TerminatedCable(termination='Open', cable_length=30, physical_temperature=300, frequencies=receiver.frequencies, epsilon=1.5)
 
-    cw_source = CW_Source(initial_cw_amplitude=5e-2, oscilator_frequency=62e6,
-                          characteristic_frequency=200, alpha=1, phase_white_noise=1e-9, phase_knee_frequency=2e6,
-                          phase_alpha=1)
+    spectra = total_radiometric_power(target, receiver)
 
-    generator = TimeStreamGenerator(integration_time=0.1, simulation_time=60.0, bandwidth=receiver.sample_rate, centre_frequency=receiver.centre_frequency, n_freq_channels=receiver.n_freq_channels)
+    #cw_source = CW_Source(initial_cw_amplitude=5e-2, oscilator_frequency=62e6,
+    #                      characteristic_frequency=200, alpha=1, phase_white_noise=1e-9, phase_knee_frequency=2e6,
+    #                      phase_alpha=1)
 
-    load_1 = Source(200, 0,frequencies=receiver.frequencies)
-    load_2 = Source(2000, 0, frequencies=receiver.frequencies)
+    #generator = TimeStreamGenerator(integration_time=0.1, simulation_time=60.0, bandwidth=receiver.sample_rate, centre_frequency=receiver.centre_frequency, n_freq_channels=receiver.n_freq_channels)
 
-    power_meter = BasicPowerMeter(linear_scale_factor=0.1, power_offset=2, characteristic_frequency=1e0, alpha=2, sample_rate=5,
-                                  white_noise_level=1e-6)
+    #load_1 = Source(200, 0,frequencies=receiver.frequencies)
+    #load_2 = Source(2000, 0, frequencies=receiver.frequencies)
 
-    generator.set_nframes(2**14)
+    #power_meter = BasicPowerMeter(linear_scale_factor=0.1, power_offset=2, characteristic_frequency=1e0, alpha=2, sample_rate=5,
+    #                              white_noise_level=1e-6)
 
-    spectra = generator.generate_simulated_data(target, cw_source, receiver, switching=True, switch_sources=[load_1, load_2, target],
-                                                switch_obs_fraction=[1/3, 1/3, 1/3], switch_cycle_period=10, power_meter=power_meter)
+    #generator.set_nframes(2**14)
+
+    #spectra = generator.generate_simulated_data(target, cw_source, receiver, switching=True, switch_sources=[load_1, load_2, target],
+    #                                            switch_obs_fraction=[1/3, 1/3, 1/3], switch_cycle_period=10, power_meter=power_meter)
     
-
-
-
-
-
-
-
-    
+    pass
