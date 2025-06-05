@@ -210,11 +210,11 @@ class TerminatedCable:
         self.frequencies = frequencies
         self.temperatures = physical_temperature * np.ones(len(self.frequencies))
         if termination=='Open':
-            self.reflection_coefficients = (mag_s12**2) * np.exp(-2j*self.frequencies*cable_length*epsilon/c)
+            self.reflection_coefficients = (mag_s12**2) * np.exp(-4j*np.pi*self.frequencies*cable_length*epsilon/c)
         elif termination=='Shorted':
-            self.reflection_coefficients = -(mag_s12**2) * np.exp(-2j*self.frequencies*cable_length*epsilon/c)
+            self.reflection_coefficients = -(mag_s12**2) * np.exp(-4j*np.pi*self.frequencies*cable_length*epsilon/c)
         else:
-            self.reflection_coefficients = (mag_s12**2) * np.exp(-2j*self.frequencies*cable_length*epsilon/c)* np.exp(-1j*np.pi) * termination_reflection_coeffs
+            self.reflection_coefficients = (mag_s12**2) * np.exp(-4j*np.pi*self.frequencies*cable_length*epsilon/c)* np.exp(-1j*np.pi) * termination_reflection_coeffs
 
         pass
     
@@ -429,7 +429,7 @@ class TimeStreamGenerator:
                                                   switch_obs_fraction=switch_obs_fraction,
                                                   integration_time=self.integration_time)
         
-        for i in range(np.ceil(int(self.n_integrations))+1): # mind the ceiling and the fact this isnt an integer. See how it works with indices
+        for i in range(np.ceil(int(self.n_integrations))): # mind the ceiling and the fact this isnt an integer. See how it works with indices
             #print(i)
             if switching:
                 switch_index = switches_list[i]
@@ -636,7 +636,7 @@ class TimeStreamGenerator:
                                                   switch_obs_fraction=switch_obs_fraction,
                                                   integration_time=self.integration_time)
         
-        for i in range(np.ceil(int(self.n_integrations))+1): # mind the ceiling and the fact this isnt an integer. See how it works with indices
+        for i in range(np.ceil(int(self.n_integrations))): # mind the ceiling and the fact this isnt an integer. See how it works with indices
             print(i)
             if switching:
                 switch_index = switches_list[i]
@@ -824,7 +824,7 @@ class TimeStreamGenerator:
             self.frequencies_mhz = data['Frequencies_MHz'][()]
 
             try:
-                self.switch_list = data['Switch List']
+                self.switch_list = data['Switch List'][()]
             except:
                 print('No Switching')
             try:
