@@ -4,8 +4,9 @@ import matplotlib.pyplot as plt
 
 
 if __name__ == '__main__':
-    f_cw = [0.01, 0.1, 1, 10, 100]
-    pm_white_noises = [0.01, 0.1, 1, 10, 100]
+    f_cw = [0.01, 1, 100]
+    pm_white_noises = [0.001, 0.0001, 0.00001]
+    receiver_betas = [0.001, 0.005, 0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 
     receiver = charger.SDR_Receiver(characteristic_frequency=100, alpha=2, centre_frequency=70e6,
                                     n_freq_channels=2**13, sample_rate=20e6,
@@ -18,28 +19,26 @@ if __name__ == '__main__':
     load = charger.Source(temperatures=373, reflection_coefficients=0, frequencies=receiver.frequencies)
     #noise_source = charger.Source(temperatures=1200, reflection_coefficients=0, frequencies=receiver.frequencies)
 
-    cw_sources = [charger.CW_Source(initial_cw_amplitude=100, oscilator_frequency=72e6, characteristic_frequency=receiver.characteristic_frequency*f, alpha=2, 
+    cw_sources = [charger.CW_Source(initial_cw_amplitude=10, oscilator_frequency=72e6, characteristic_frequency=receiver.characteristic_frequency*f, alpha=2, 
                                     phase_white_noise=1e-9, phase_knee_frequency=1e-9, phase_alpha=0) for f in f_cw]
     
     power_meter = charger.BasicPowerMeter(5, 3, characteristic_frequency=0.01*receiver.characteristic_frequency, alpha=2, sample_rate=13, white_noise_level=1)
     
 
-    directories = ['Test_Data/PowerMeterTests/wn0.01/',
-                   'Test_Data/PowerMeterTests/wn0.1/',
-                   'Test_Data/PowerMeterTests/wn1/',
-                   'Test_Data/PowerMeterTests/wn10/',
-                   'Test_Data/PowerMeterTests/wn100/']
+    directories = ['Test_Data/PowerMeterTestsBlackmanNew/wn0.001/',
+                   'Test_Data/PowerMeterTestsBlackmanNew/wn0.0001/',
+                   'Test_Data/PowerMeterTestsBlackmanNew/wn0.00001/']
     
     for pmwn, d in zip(pm_white_noises, directories):
         for f in f_cw:
-            receiver = charger.SDR_Receiver(characteristic_frequency=100, alpha=2, centre_frequency=70e6,
+            receiver = charger.SDR_Receiver(characteristic_frequency=1000, alpha=2, centre_frequency=70e6,
                                     n_freq_channels=2**13, sample_rate=20e6,
                                     t_unc=250, t_cos=190, t_sin=90, t_n=300,
-                                    reflection_coefficients=0.5, window_function='Rectangular',
+                                    reflection_coefficients=0.5, window_function='Blackman',
                                     beta=0)
             load = charger.Source(temperatures=300, reflection_coefficients=0, frequencies=receiver.frequencies)
 
-            cw_source = charger.CW_Source(initial_cw_amplitude=100, oscilator_frequency=72e6, characteristic_frequency=receiver.characteristic_frequency*f, alpha=2, 
+            cw_source = charger.CW_Source(initial_cw_amplitude=0.01, oscilator_frequency=72e6, characteristic_frequency=receiver.characteristic_frequency*f, alpha=2, 
                                     phase_white_noise=1e-9, phase_knee_frequency=1e-9, phase_alpha=0)
             
             power_meter = charger.BasicPowerMeter(5, 3, characteristic_frequency=0.01*receiver.characteristic_frequency, alpha=2, sample_rate=13, white_noise_level=pmwn)
@@ -52,6 +51,21 @@ if __name__ == '__main__':
             t.generate_simulated_data(obs_source=load, cw_source=cw_source, receiver=receiver,
                                   save_data=True, savepath=d, title=title, save_into_object=True, plot_spectra=False,
                                   switching=False, power_meter=power_meter)
+    #for b in receiver_betas:
+     #   receiver = charger.SDR_Receiver(characteristic_frequency=100, alpha=2, centre_frequency=70e6,
+      #                              n_freq_channels=2**13, sample_rate=20e6,
+       #                             t_unc=0, t_cos=0, t_sin=0, t_n=300,
+        #                            reflection_coefficients=0.5, window_function='Blackman',
+         #                           beta=b)
+#        load = charger.Source(temperatures=300, reflection_coefficients=0, frequencies=receiver.frequencies)
+ #       cw_source = charger.CW_Source(initial_cw_amplitude=10, oscilator_frequency=72e6,
+  #                                    characteristic_frequency=0.01*receiver.characteristic_frequency,phase_white_noise=1e-9, phase_alpha=0, phase_knee_frequency=1e-9)
+   #     t = charger.TimeStreamGenerator(integration_time=1, simulation_time=600, bandwidth=receiver.sample_rate,
+    #                                    centre_frequency=receiver.centre_frequency, n_freq_channels=receiver.n_freq_channels)
+     #   t.generate_simulated_data_restricted_gains(obs_source=load, cw_source=cw_source, receiver=receiver, save_data=True,
+      #                                             savepath='Test_Data/Decorrelated_Gain', title=f'tod_beta_{b}.hd5f', plot_spectra=False,
+       #                                            switching=False)
+        #print(f'Current beta; {b}')
 
 
     print('-----------===========---------')

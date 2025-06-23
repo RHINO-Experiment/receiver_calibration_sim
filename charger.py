@@ -270,7 +270,7 @@ class BasicPowerMeter:
         pass
     def measure_cw_power(self, cw_v_amplitude):
         cw_pwr = cw_v_amplitude**2
-        return cw_pwr*self.power_offset + self.power_offset
+        return cw_pwr*self.linear_scale_factor + self.power_offset
     
     def add_white_noise(self, powers):
         noise = np.random.normal(loc=0, scale=self.white_noise_level, size=powers.shape)
