@@ -429,7 +429,7 @@ class TimeStreamGenerator:
                                                   switch_obs_fraction=switch_obs_fraction,
                                                   integration_time=self.integration_time)
         
-        for i in range(np.ceil(int(self.n_integrations))): # mind the ceiling and the fact this isnt an integer. See how it works with indices
+        for i in range(int(self.n_integrations)): # mind the ceiling and the fact this isnt an integer. See how it works with indices
             #print(i)
             if switching:
                 switch_index = switches_list[i]
