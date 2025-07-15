@@ -6,6 +6,7 @@ import argparse
 import itertools
 
 import scipy.fft
+from scipy import signal
 
 def F(f, f_k, alpha, delta_nu):
     return ((f_k / f)**alpha) / delta_nu
@@ -270,7 +271,7 @@ class BasicPowerMeter:
         pass
     def measure_cw_power(self, cw_v_amplitude):
         cw_pwr = cw_v_amplitude**2
-        return cw_pwr*self.linear_scale_factor + self.power_offset
+        return (cw_pwr*self.linear_scale_factor) + self.power_offset
     
     def add_white_noise(self, powers):
         noise = np.random.normal(loc=0, scale=self.white_noise_level, size=powers.shape)
@@ -336,8 +337,13 @@ class SDR_Receiver:
             self.window_function = np.hamming(self.n_freq_channels)
         elif self.window_function == 'Hanning':
             self.window_function = np.hanning(self.n_freq_channels)
+        elif self.window_function == 'BlackmanHarris' or self.window_function == 'Blackman-Harris':
+            self.window_function = signal.windows.blackmanharris(self.n_freq_channels)
+        elif self.window_function == 'Cosine':
+            self.window_function = signal.windows.cosine(M=self.n_freq_channels)
         else:
             self.window_function = np.ones(self.n_freq_channels)
+        
 
         pass
 
@@ -429,7 +435,7 @@ class TimeStreamGenerator:
                                                   switch_obs_fraction=switch_obs_fraction,
                                                   integration_time=self.integration_time)
         
-        for i in range(int(self.n_integrations)): # mind the ceiling and the fact this isnt an integer. See how it works with indices
+        for i in range(np.ceil(int(self.n_integrations))): # mind the ceiling and the fact this isnt an integer. See how it works with indices
             #print(i)
             if switching:
                 switch_index = switches_list[i]
