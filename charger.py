@@ -11,9 +11,6 @@ from scipy import signal
 def F(f, f_k, alpha, delta_nu):
     return ((f_k / f)**alpha) / delta_nu
 
-def PSD_F(f, omega, f_k, alpha, omega_o, beta, delta_nu, n_channels, sample_rate):
-    return F(f, f_k, alpha, delta_nu) #* H(omega, omega_o, beta) * C(beta, n_channels, sample_rate, omega_o)
-
 def generate_F_psd(f_k=1, alpha=2, receiver_sample_rate=20e6, n_times=1024, tau=1, n_channels=1024):
     delta_nu = receiver_sample_rate / n_channels
     fourier_freqs = np.fft.rfftfreq(n_times+2, d=tau)
@@ -83,29 +80,6 @@ def generate_psd(f_k=1, alpha=2, beta=0.5, receiver_sample_rate=20e6, n_times=2*
 
     return tod
 
-
-def one_over_f(f, white_noise_level, f_knee, alpha):
-    psd = white_noise_level * ( 1+ ((f_knee / f)**alpha))
-    return psd
-
-def generate_one_over_f_time_series(length, delta_t, white_noise_level, f_knee, alpha):
-    """
-    Generates a time series with white and one over f noise inverse spectrum.
-
-    Arguments:
-    length -- length of the timeseries (best if 2**n - 2 for fastest performance)
-    delta_t -- spacing between the time series
-    white_noise_level -- white noise variance
-    knee_frequency -- knee frequency where 1/f equels white noise variance
-    alpha -- spectral index of the pink noise
-
-    """
-    fourier_freqs = np.fft.rfftfreq(length+2, d=delta_t)
-    fourier_freqs = fourier_freqs[1:]
-    random_phases = np.random.uniform(0, 2*np.pi, size=fourier_freqs.shape)
-    complex_psd = one_over_f(fourier_freqs, white_noise_level, f_knee, alpha) * np.exp(1j*random_phases) 
-    varying_signal = np.fft.irfft(complex_psd) * length
-    return varying_signal
 
 def total_radiometric_power(source, receiver):
     admitance = np.sqrt(1 - np.abs(receiver.reflection_coefficients)**2) / (1 - receiver.reflection_coefficients*source.reflection_coefficients)
@@ -279,15 +253,17 @@ class BasicPowerMeter:
     
 
 class CW_Source:
-    def __init__(self, initial_cw_amplitude, oscilator_frequency, characteristic_frequency, alpha,
-                 phase_white_noise, phase_knee_frequency, phase_alpha):
+    def __init__(self, initial_cw_amplitude, oscilator_frequency,
+                 characteristic_frequency, alpha, phase_noise_params=None):
+        """
+        phase noise params - list - aranged from highest order to lowest [1,2,3] -> x**2 +2*x + 3 
+        """
+
         self.initial_cw_amplitude = initial_cw_amplitude
         self.characteristic_frequency = characteristic_frequency
         self.alpha = alpha
-        self.phase_white_noise = phase_white_noise
-        self.phase_knee_frequency = phase_knee_frequency
-        self.phase_alpha = phase_alpha
         self.oscilator_frequency = oscilator_frequency
+        self.phase_noise_params = phase_noise_params
         pass
 
     def set_baseband_frequency(self, receiver):
@@ -295,14 +271,26 @@ class CW_Source:
         self.base_band_frequency = receiver.centre_frequency - self.oscilator_frequency
 
     def phase_noise_sine_signal(self, length, delta_t):
-        phase_noise = generate_one_over_f_time_series(length, delta_t, self.phase_white_noise,
-                                                 self.phase_knee_frequency, self.phase_alpha)
+        if self.phase_noise_params is not None:
+            phase_noise = self.phase_noise_modes(length, delta_t)
+        else:
+            phase_noise = 0
         times = np.arange(length) * delta_t
 
         phases = (2*np.pi*self.base_band_frequency*times) + phase_noise
 
         return np.exp(1j*(phases))
-
+    
+    def phase_noise_modes(self, length, delta_t):
+        fourier_freqs = np.fft.rfftfreq(length+2, d=delta_t) 
+        fourier_freqs = fourier_freqs[1:] # generate the fourier frequencies
+        # get the functional form with the phase_noise_params
+        phase_poly = np.poly1d(self.phase_noise_params)
+        phase_frequencies = phase_poly(fourier_freqs)
+        random_phases = np.random.uniform(0, 2*np.pi, size=fourier_freqs.shape)
+        complex_psd = phase_frequencies * np.exp(1j*random_phases) 
+        varying_signal = np.fft.irfft(complex_psd) * length
+        return varying_signal
 
 class SDR_Receiver:
     def __init__(self, characteristic_frequency, alpha, centre_frequency, n_freq_channels, sample_rate,
@@ -481,7 +469,10 @@ class TimeStreamGenerator:
             base_measured_powers = power_meter.add_white_noise(base_measured_powers)
             base_measured_powers *= pm_gains
 
-            split_cw_amplitudes = np.array_split(base_measured_powers, len(pm_cw_measurements), )
+            pm_zero_level_measurements = np.array([power_meter.measure_cw_power(0) for i in range(power_meter.sample_rate*5)])
+            pm_zero_level_measurements = power_meter.add_white_noise(pm_zero_level_measurements)
+
+            split_cw_amplitudes = np.array_split(base_measured_powers, len(pm_cw_measurements))
             pm_cw_measurements = np.array([np.mean(s) for s in split_cw_amplitudes])
 
         if save_data:
@@ -503,6 +494,7 @@ class TimeStreamGenerator:
                 if power_meter is not None:
                     data.create_dataset('PM_Measurements', data=pm_cw_measurements, dtype=pm_cw_measurements.dtype)
                     simulation_params.create_dataset('PM_Gains', data=pm_gains, dtype=pm_gains.dtype)
+                    data.create_dataset('PM_Zero_Level_Measurements', data=pm_zero_level_measurements, dtype=pm_zero_level_measurements.dtype)
 
         if save_into_object:
             self.receiver_gains = system_gains
@@ -843,28 +835,4 @@ class TimeStreamGenerator:
 
 
 if __name__ == "__main__":
-    receiver = SDR_Receiver(characteristic_frequency=50,  alpha=2, centre_frequency=70e6, n_freq_channels=2**12, sample_rate=20e6,
-                            t_unc=20, t_sin=20, t_cos=100, t_n=200, reflection_coefficients=0.5, window_function='Blackman', beta=0.0)
-    
-    target = TerminatedCable(termination='Open', cable_length=30, physical_temperature=300, frequencies=receiver.frequencies, epsilon=1.5)
-
-    spectra = total_radiometric_power(target, receiver)
-
-    #cw_source = CW_Source(initial_cw_amplitude=5e-2, oscilator_frequency=62e6,
-    #                      characteristic_frequency=200, alpha=1, phase_white_noise=1e-9, phase_knee_frequency=2e6,
-    #                      phase_alpha=1)
-
-    #generator = TimeStreamGenerator(integration_time=0.1, simulation_time=60.0, bandwidth=receiver.sample_rate, centre_frequency=receiver.centre_frequency, n_freq_channels=receiver.n_freq_channels)
-
-    #load_1 = Source(200, 0,frequencies=receiver.frequencies)
-    #load_2 = Source(2000, 0, frequencies=receiver.frequencies)
-
-    #power_meter = BasicPowerMeter(linear_scale_factor=0.1, power_offset=2, characteristic_frequency=1e0, alpha=2, sample_rate=5,
-    #                              white_noise_level=1e-6)
-
-    #generator.set_nframes(2**14)
-
-    #spectra = generator.generate_simulated_data(target, cw_source, receiver, switching=True, switch_sources=[load_1, load_2, target],
-    #                                            switch_obs_fraction=[1/3, 1/3, 1/3], switch_cycle_period=10, power_meter=power_meter)
-    
     pass
