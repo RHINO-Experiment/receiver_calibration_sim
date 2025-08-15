@@ -409,9 +409,12 @@ class TimeStreamGenerator:
             cw_amplitudes = np.zeros(shape=system_gains.shape)
         else:
             cw_source.set_baseband_frequency(receiver)
-            cw_amplitudes = cw_source.initial_cw_amplitude * (1 + generate_F_psd(f_k = cw_source.characteristic_frequency, alpha=cw_source.alpha,
+
+            cw_source_fluctuations = 1 + generate_F_psd(f_k = cw_source.characteristic_frequency, alpha=cw_source.alpha,
                                                                                  receiver_sample_rate=receiver.sample_rate, n_times = self.n_frames,
-                                                                                 tau=self.delta_t, n_channels=receiver.n_freq_channels))
+                                                                                 tau=self.delta_t, n_channels=receiver.n_freq_channels)
+
+            cw_amplitudes = cw_source.initial_cw_amplitude * cw_source_fluctuations
             cw_amplitudes = np.abs(cw_amplitudes)
 
         integrated_spectra = np.ones(shape=(int(np.ceil(self.n_integrations)), receiver.n_freq_channels))
@@ -465,8 +468,8 @@ class TimeStreamGenerator:
                                             tau=1 / receiver.sample_rate,
                                             n_times=self.n_frames
                                             )
-            base_measured_powers = power_meter.measure_cw_power(cw_amplitudes)
-            base_measured_powers = power_meter.add_white_noise(base_measured_powers)
+            base_measured_powers = power_meter.measure_cw_power(cw_source_fluctuations)
+            base_measured_powers = power_meter.add_white_noise(base_measured_powers) # normalised as measuring 
             base_measured_powers *= pm_gains
 
             pm_zero_level_measurements = np.array([power_meter.measure_cw_power(0) for i in range(power_meter.sample_rate*5)])
@@ -684,7 +687,7 @@ class TimeStreamGenerator:
             base_measured_powers = power_meter.add_white_noise(base_measured_powers)
             base_measured_powers *= pm_gains
 
-            split_cw_amplitudes = np.array_split(base_measured_powers, len(pm_cw_measurements), )
+            split_cw_amplitudes = np.array_split(base_measured_powers, len(pm_cw_measurements))
             pm_cw_measurements = np.array([np.mean(s) for s in split_cw_amplitudes])
 
         if save_data:

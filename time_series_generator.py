@@ -5,31 +5,81 @@ import os
 
 
 def generate_windowing_tests():
-    windows = ['Rectangular','Blackman', 'Bartlett', 'Hamming', 'Hanning', 'BlackmanHarris', 'Cosine']
-    
-    receiver_list = [charger.SDR_Receiver(characteristic_frequency=100, alpha=2, centre_frequency=70e6,
+    windows = ['Rectangular','Blackman', 'Bartlett', 'BlackmanHarris', 'Cosine']
+    receiver_list = [charger.SDR_Receiver(characteristic_frequency=1000, alpha=2, centre_frequency=70e6,
                                           n_freq_channels=2**13, sample_rate=20e6,
-                                          t_unc=250, t_cos=50, t_sin=50, t_n=300, reflection_coefficients=0.5, window_function=window, beta=0) for window in windows]
+                                          t_unc=250, t_cos=0, t_sin=0, t_n=300, reflection_coefficients=0.5, window_function=window, beta=0) for window in windows]
 
     load = charger.Source(temperatures=373, reflection_coefficients=0, frequencies=receiver_list[0].frequencies)
 
-    cw_amps = [0.01, 1, 100]
+    #cw_amps = [0.01, 0.1, 1, 10,100]
+    cw_amps = [100]
+    cw_amps = [0.1, 10]
 
-    cw_sources = [charger.CW_Source(initial_cw_amplitude=a, oscilator_frequency=75e6, characteristic_frequency=receiver_list[0].characteristic_frequency*0.01,
-                                   alpha=2) for a in cw_amps]
+    cw_sources = [charger.CW_Source(initial_cw_amplitude=a, oscilator_frequency=75e6, characteristic_frequency=receiver_list[0].characteristic_frequency*0.001,
+                                   alpha=1) for a in cw_amps]
     
     power_meter = charger.BasicPowerMeter(5, 3, characteristic_frequency=cw_sources[0].characteristic_frequency*0.01, alpha=2, sample_rate=13, white_noise_level=1)
 
     # Set up folder for this run if it doesn't exist
 
-    save_path = 'Generated_Data/WindowTests'
+    save_path = 'Generated_Data/WindowTests_LaptopRan'
 
     if not os.path.exists(path=save_path):
         os.makedirs(save_path)
         print('Save Path Created')
     else:
         print('Save Path Set Up')
-    save_path = 'Generated_Data/WindowTests/'
+    save_path = save_path+'/'
+
+    for window, rec in zip(windows, receiver_list):
+        for cw_amp, cw_source in zip(cw_amps, cw_sources):
+            t = charger.TimeStreamGenerator(integration_time=1, simulation_time=600, bandwidth=rec.sample_rate,
+                                            centre_frequency=rec.centre_frequency, n_freq_channels=rec.n_freq_channels)
+            title = f'win{window}_cwamp{str(cw_amp)}_test.hd5f'
+
+            t.generate_simulated_data(obs_source=load, cw_source=cw_source,
+                                      receiver=rec, save_data=True, savepath=save_path,title=title,
+                                      save_into_object=False, plot_spectra=False,
+                                      switching=False, power_meter=power_meter)
+            print(f' -- Test Window = {window}')
+            print(f' cw_amp = {cw_amp}')
+            print(f'--Done--')
+
+    print('======================================')
+    print('Unstable CW Window CW Amp Data Generation Finished')
+    print('======================================')
+    return
+
+
+
+def generate_unstable_cw_window_tests():
+    windows = ['Rectangular','Blackman', 'Bartlett', 'BlackmanHarris', 'Cosine']
+    receiver_list = [charger.SDR_Receiver(characteristic_frequency=1000, alpha=2, centre_frequency=70e6,
+                                          n_freq_channels=2**13, sample_rate=20e6,
+                                          t_unc=250, t_cos=0, t_sin=0, t_n=300, reflection_coefficients=0.5, window_function=window, beta=0) for window in windows]
+
+    load = charger.Source(temperatures=373, reflection_coefficients=0, frequencies=receiver_list[0].frequencies)
+
+    cw_amps = [0.01, 0.1, 1, 10,100]
+    #cw_amps = [100]
+    #cw_amps = [0.1, 10]
+
+    cw_sources = [charger.CW_Source(initial_cw_amplitude=a, oscilator_frequency=75e6, characteristic_frequency=receiver_list[0].characteristic_frequency*50,
+                                   alpha=1) for a in cw_amps]
+    
+    power_meter = charger.BasicPowerMeter(5, 3, characteristic_frequency=cw_sources[0].characteristic_frequency*0.01, alpha=2, sample_rate=13, white_noise_level=0.00001)
+
+    # Set up folder for this run if it doesn't exist
+
+    save_path = 'Generated_Data/WindowTests_LaptopRan_Unstable_CW'
+
+    if not os.path.exists(path=save_path):
+        os.makedirs(save_path)
+        print('Save Path Created')
+    else:
+        print('Save Path Set Up')
+    save_path = save_path+'/'
 
     for window, rec in zip(windows, receiver_list):
         for cw_amp, cw_source in zip(cw_amps, cw_sources):
@@ -103,10 +153,12 @@ def test_noise_wave_extraction():
 
         t = charger.TimeStreamGenerator(integration_time=1, simulation_time=600, bandwidth=receiver.sample_rate, centre_frequency=receiver.centre_frequency,
                                         n_freq_channels=receiver.n_freq_channels)
+        g = charger.TimeStreamGenerator(integration_time=1, simulation_time=600, bandwidth=receiver.sample_rate, centre_frequency=receiver.centre_frequency,
+                                        n_freq_channels=receiver.n_freq_channels)
         t.generate_simulated_data(obs_source=load, cw_source=cw_source, receiver=receiver, save_data=True, savepath=save_path, title=cw_title,
-                                  switching=True, switch_sources=[load, noise_diode, calibrator], switch_cycle_period=60)
-        t.generate_simulated_data(obs_source=load, cw_source=None, receiver=receiver, save_data=True, savepath=save_path, title=no_cw_title,
-                                  switching=True, switch_sources=[load, noise_diode, calibrator], switch_cycle_period=60)
+                                  switching=True, switch_sources=[load, noise_diode, calibrator], switch_cycle_period=60, save_into_object=False)
+        g.generate_simulated_data(obs_source=load, cw_source=None, receiver=receiver, save_data=True, savepath=save_path, title=no_cw_title,
+                                  switching=True, switch_sources=[load, noise_diode, calibrator], switch_cycle_period=60, save_into_object=False)
     print('======================================')
     print('Noise Wave Param Extraction Data Generation Finished')
     print('======================================')
@@ -172,14 +224,14 @@ def decorelated_gains_tests():
 
 def power_meter_params_tests():
     
-    save_path = 'Generated_Data/PowerMeterTests'
+    save_path = 'Generated_Data/PowerMeterTests_Check'
 
     if not os.path.exists(path=save_path):
         os.makedirs(save_path)
         print('Save Path Created')
     else:
         print('Save Path Set Up')
-    save_path = 'Generated_Data/PowerMeterTests/'
+    save_path = save_path+'/'
 
 
     receiver = charger.SDR_Receiver(characteristic_frequency=100, alpha=2, centre_frequency=70e6,
@@ -262,6 +314,9 @@ def phase_noise_tests():
                                    alpha=2, phase_noise_params=[0,0,0,rwpn,wpn]) # add phase noise
                 title = f'win{str(window)}_wpn{str(wpn)}_rwpn{rwpn}.hd5f'
 
+                t = charger.TimeStreamGenerator(integration_time=1, simulation_time=600, bandwidth=receiver.sample_rate,
+                                            centre_frequency=receiver.centre_frequency, n_freq_channels=receiver.n_freq_channels)
+
                 t.generate_simulated_data(obs_source=load, cw_source=cw_source, receiver=receiver, save_data=True, savepath=save_path,
                                           title=title, switching=False, plot_spectra=False, save_into_object=False)
 
@@ -273,11 +328,12 @@ def phase_noise_tests():
 
 
 if __name__ == '__main__':
-    generate_windowing_tests()
-    decorelated_gains_tests()
-    power_meter_params_tests()
-    phase_noise_tests()
-    test_noise_wave_extraction()
+    #generate_windowing_tests()
+    generate_unstable_cw_window_tests()
+    #decorelated_gains_tests()
+    #power_meter_params_tests()
+    #phase_noise_tests()
+    #test_noise_wave_extraction()
 
     print('-----------===========---------')
     print('             All Done')
