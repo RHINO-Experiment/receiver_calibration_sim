@@ -4,38 +4,49 @@ import h5py
 import multiprocessing
 import argparse
 import itertools
+import time
 
 import scipy.fft
 from scipy import signal
 
+def ad8317_output(p_in,
+                  X=1,
+                  V_slopedB=-22, # mV/dB
+                  P_intercept=15): # dBm
+    P_intercept_linear = 10**(P_intercept/10)
+    V_out = X * V_slopedB * 1e-3 * 10 * np.log10(p_in / P_intercept_linear)
+    return V_out
+
 def F(f, f_k, alpha, delta_nu):
     return ((f_k / f)**alpha) / delta_nu
 
-def generate_F_psd(f_k=1, alpha=2, receiver_sample_rate=20e6, n_times=1024, tau=1, n_channels=1024):
+def generate_F_psd(f_k=1, alpha=2, receiver_sample_rate=20e6, n_times=1024, del_t=1, n_channels=1024):
     delta_nu = receiver_sample_rate / n_channels
-    fourier_freqs = np.fft.rfftfreq(n_times+2, d=tau)
+    fourier_freqs = np.fft.rfftfreq(n_times+2, d=del_t)
     fourier_freqs = fourier_freqs[1:]
+
+    fourier_freqs = np.linspace(1/(n_times*del_t), 1/(2*del_t), n_times) # f
 
     psd = np.ones(shape=(n_times,))
     psd = np.array([F(f, f_k, alpha, delta_nu) for f in fourier_freqs])
 
     complex_matrix = np.exp(1j*np.random.uniform(0, 2*np.pi, size=psd.shape))
-    z = np.sqrt(psd) * complex_matrix
-    tod = np.fft.irfft(z) 
-
+    z = np.sqrt(psd / delta_nu) * complex_matrix
+    tod = np.fft.ifft(z) 
+    tod = tod.real
     return tod
 
 
-def H(omega, omega_0, beta):
+def H(tau, tau_0, beta):
     exponent = (1-beta) / beta
-    return (omega_0 / omega)**exponent
+    return (tau_0 / tau)**exponent
 
-def psd_func(f, omega, f_k, alpha, omega_0, beta, delta_nu):
-    psd_comp = F(f, f_k, alpha, delta_nu) * H(omega, omega_0, beta)
+def psd_func(f, tau, f_k, alpha, tau_0, beta, delta_nu):
+    psd_comp = F(f, f_k, alpha, delta_nu) * H(tau, tau_0, beta)
     
     return psd_comp
 
-def generate_psd(f_k=1, alpha=2, beta=0.5, receiver_sample_rate=20e6, n_times=2**14, tau=1, n_channels=2**14, normalise=True):
+def generate_psd(f_k=1, alpha=2, beta=0.5, receiver_sample_rate=20e6, n_times=2**14, del_t=1, n_channels=2**13, normalise=True):
     """
     Generates time ordered data with 1/f fluctuations in time and decorrelation in frequency
 
@@ -52,31 +63,32 @@ def generate_psd(f_k=1, alpha=2, beta=0.5, receiver_sample_rate=20e6, n_times=2*
     tod - (n_times, n_channels) array with 1/f variations to be used agaisnt time-series data
     """
     delta_nu = receiver_sample_rate / n_channels
-    fourier_freqs = np.linspace(1/(n_times*tau), 1/(2*tau), n_times)
+    
+    fourier_freqs = np.linspace(1/(n_times*del_t), 1/(2*del_t), n_times) # f
 
-    fourier_omegas = np.linspace(1/(n_channels*delta_nu), 1/(delta_nu*2), n_channels)
+    fourier_taus = np.linspace(1/(n_channels*delta_nu), 1/(delta_nu*2), n_channels) # tau
 
-    omega_0 = 1 / (n_channels * delta_nu)
+    tau_0 = 1 / (n_channels * delta_nu)
 
     #print(omegas)
     #grid_freq, grid_omega = np.meshgrid(fourier_freqs, fourier_omegas)
-    grid_omega, grid_freq = np.meshgrid(fourier_omegas, fourier_freqs)
+    grid_tau, grid_f = np.meshgrid(fourier_taus, fourier_freqs) # set up grids for calcualting 2d componants
 
-    psd_array = psd_func(grid_freq, grid_omega, f_k, alpha, omega_0, beta, delta_nu)
+    psd_array = psd_func(grid_f, grid_tau, f_k, alpha, tau_0, beta, delta_nu) # includes del_nu already
 
     if normalise:
-        f = lambda omega : omega_0 * np.sinc(np.pi*delta_nu*tau)**2*H(omega, omega_0, beta)
-        K = np.sum(np.array([f(omega) for omega in fourier_omegas]))
-        psd_array /= K
+        intergrand = lambda tau : tau_0 * np.sinc(np.pi*delta_nu*tau)**2*H(tau, tau_0, beta)
+        K = np.sum(np.array([intergrand(tau) for tau in fourier_taus]))
+        psd_array = psd_array / K
 
     complex_matrix = np.exp(1j*np.random.uniform(0, 2*np.pi, size=psd_array.shape))
     #complex_matrix = np.random.uniform(0, 2*np.pi, size=psd.shape) + 1j * np.random.uniform(0, 2*np.pi, size=psd.shape)
-    z = np.sqrt(psd_array) * complex_matrix
+    z = np.sqrt(psd_array / (del_t*delta_nu)) * complex_matrix
 
     
     #tod = np.fft.ifft2(z)
     tod = scipy.fft.ifft2(z, workers=-1)
-    tod = np.abs(tod)
+    tod = tod.real
 
     return tod
 
@@ -106,7 +118,14 @@ def add_white_thermal_noise(t_sys, delta_nu, tau):
     t_sys += np.random.normal(loc=0, scale=delta_t)
     return t_sys
 
-def compute_frame(receiver_gain, cw_amplitude, receiver, cw_source, source):  
+def compute_frame(receiver_gain, cw_amplitude, receiver, cw_source, source, process_id):
+    # reset seed
+    if receiver_gain == 1:
+        seed = (process_id + 12) * 10000 * np.random.random()
+    else:
+        seed = receiver_gain * 10000 * np.random.random()
+    np.random.seed(int(seed))
+
     initial_spectrum = total_radiometric_power(source, receiver)
     #initial_spectrum = np.abs(add_radiometric_noise(initial_spectrum, receiver.sample_rate / receiver.n_freq_channels)) #receiver.sample_rate / receiver.n_freq_channels
     initial_spectrum = np.abs(add_white_thermal_noise(initial_spectrum, delta_nu=receiver.channel_width, tau=receiver.delta_t_spectrum))
@@ -213,24 +232,6 @@ class VectorNetworkAnalyser:
     def __init__(self, start, stop):
         pass
 
-class LogPowerMeter:
-    def __init__(self, characteristic_frequency, sample_rate, alpha, bit_depth, physical_temperature, bandwidth,
-                 slope, max_voltage=3.3):
-        self.characteristic_frequency = characteristic_frequency
-        self.sample_rate = sample_rate
-        self.alpha = alpha
-        self.bit_depth = bit_depth
-        self.physical_temperature = physical_temperature
-        self.bandwidth = bandwidth
-        self.measurement_levels = 2**self.bit_depth
-        self.slope = slope
-        self.max_voltage=max_voltage
-        pass
-
-    def measure_cw_power(self, cw_v_amplitude):
-        cw_pwr = cw_v_amplitude**2
-        return cw_pwr
-
 
 class BasicPowerMeter:
     def __init__(self, linear_scale_factor, power_offset,
@@ -251,6 +252,67 @@ class BasicPowerMeter:
         noise = np.random.normal(loc=0, scale=self.white_noise_level, size=powers.shape)
         return powers + noise
     
+    def return_pm_samples(self, pm_measured_values,
+                          cw_amp_frame_time):
+        frame_rate = 1/cw_amp_frame_time
+        nth_sample = int(frame_rate / self.sample_rate)
+
+        return pm_measured_values[::nth_sample]
+
+class AD8317_LogPowerMeter:
+    def __init__(self,
+                 characteristic_frequency,
+                 alpha,
+                 sample_rate,
+                 white_noise_level,
+                 X=1,
+                 V_slopedB=-22, # mV/dB
+                 P_intercept=15,
+                 bit_depth=12,
+                 max_voltage=3.3): #dBm
+        self.X = X
+        self.V_slopedB = V_slopedB
+        self.P_intercept = P_intercept
+        self.characteristic_frequency = characteristic_frequency
+        self.alpha = alpha
+        self.sample_rate = sample_rate
+        self.white_noise_level = white_noise_level
+        self.bit_depth=bit_depth
+        self.max_voltage=max_voltage
+        self.voltage_levels = 2**self.bit_depth
+        pass
+
+    def measure_cw_power(self, cw_v_amplitude):
+        cw_pwr = cw_v_amplitude**2
+        
+        voltage = ad8317_output(p_in=cw_pwr,
+                                X=self.X,
+                                V_slopedB=self.V_slopedB,
+                                P_intercept=self.P_intercept)
+        
+        try:
+            bit = np.array([int(v * (self.voltage_levels - 1) / self.max_voltage) for v in voltage])
+        except:
+            if cw_v_amplitude == 0:
+                voltage = 3.3
+            bit = int(voltage * (self.voltage_levels - 1) / self.max_voltage)
+
+        voltage = bit * self.max_voltage / (self.voltage_levels-1)
+        
+        return voltage
+    
+    def add_white_noise(self, powers):
+        noise = np.random.normal(loc=0, scale=self.white_noise_level, size=powers.shape)
+        return powers + noise
+
+    def return_pm_samples(self, pm_measured_values,
+                          cw_amp_frame_time):
+        frame_rate = 1/cw_amp_frame_time
+        nth_sample = int(frame_rate / self.sample_rate)
+
+        return pm_measured_values[::nth_sample]
+
+
 
 class CW_Source:
     def __init__(self, initial_cw_amplitude, oscilator_frequency,
@@ -397,12 +459,12 @@ class TimeStreamGenerator:
         print('   generating data')
         if receiver.beta == 0:
             system_gains = 1 + generate_F_psd(f_k=receiver.characteristic_frequency, alpha=receiver.alpha, receiver_sample_rate=receiver.sample_rate,
-                                              n_times=self.n_frames, tau=self.delta_t, n_channels=receiver.n_freq_channels) # n_frames
+                                              n_times=self.n_frames, del_t=self.delta_t, n_channels=receiver.n_freq_channels) # n_frames
 
             system_gains = np.abs(system_gains)
         else:
             system_gains = 1 + generate_psd(receiver.characteristic_frequency, alpha=receiver.alpha, beta=receiver.beta,
-                                            receiver_sample_rate=receiver.sample_rate, n_times=self.n_frames, tau=self.delta_t,
+                                            receiver_sample_rate=receiver.sample_rate, n_times=self.n_frames, del_t=self.delta_t,
                                             n_channels=receiver.n_freq_channels)
         
         if cw_source is None:
@@ -412,8 +474,8 @@ class TimeStreamGenerator:
 
             cw_source_fluctuations = 1 + generate_F_psd(f_k = cw_source.characteristic_frequency, alpha=cw_source.alpha,
                                                                                  receiver_sample_rate=receiver.sample_rate, n_times = self.n_frames,
-                                                                                 tau=self.delta_t, n_channels=receiver.n_freq_channels)
-
+                                                                                 del_t=self.delta_t, n_channels=receiver.n_freq_channels)
+            cw_source_fluctuations = np.abs(cw_source_fluctuations)
             cw_amplitudes = cw_source.initial_cw_amplitude * cw_source_fluctuations
             cw_amplitudes = np.abs(cw_amplitudes)
 
@@ -426,6 +488,8 @@ class TimeStreamGenerator:
                                                   switch_obs_fraction=switch_obs_fraction,
                                                   integration_time=self.integration_time)
         
+        split_cw_amplitudes = np.array_split(cw_amplitudes, np.ceil(int(self.n_integrations)))
+        split_gains = np.array_split(system_gains, np.ceil(int(self.n_integrations)))
         for i in range(np.ceil(int(self.n_integrations))): # mind the ceiling and the fact this isnt an integer. See how it works with indices
             #print(i)
             if switching:
@@ -433,17 +497,21 @@ class TimeStreamGenerator:
                 obs_source = switch_sources[switch_index]
 
             if i == int(np.floor(self.n_integrations)):
-                g_list = system_gains[int(i*self.frames_per_integration): int(self.n_frames-1)]
+                #g_list = system_gains[int(i*self.frames_per_integration): int(self.n_frames-1)]
                 #print('final g_list shape - ', g_list.shape)
                 #print('final i = ', i)
-                cw_amp_list = cw_amplitudes[int(i*self.frames_per_integration): int(self.n_frames-1)]
+                #cw_amp_list = cw_amplitudes[int(i*self.frames_per_integration): int(self.n_frames-1)]
+                cw_amp_list = split_cw_amplitudes[i]
+                g_list =split_gains[i]
             else:
-                g_list = system_gains[int(i*self.frames_per_integration): int(i*self.frames_per_integration + self.frames_per_integration)]
-                cw_amp_list = cw_amplitudes[int(i*self.frames_per_integration): int(i*self.frames_per_integration + self.frames_per_integration)]
+                #g_list = system_gains[int(i*self.frames_per_integration): int(i*self.frames_per_integration + self.frames_per_integration)]
+                #cw_amp_list = cw_amplitudes[int(i*self.frames_per_integration): int(i*self.frames_per_integration + self.frames_per_integration)]
+                g_list = split_gains[i]
+                cw_amp_list = split_cw_amplitudes[i]
             
             with multiprocessing.Pool() as pool:
                 frames = pool.starmap(compute_frame, zip(g_list, cw_amp_list, itertools.repeat(receiver),
-                                                         itertools.repeat(cw_source), itertools.repeat(obs_source)))
+                                                         itertools.repeat(cw_source), itertools.repeat(obs_source), np.arange(len(g_list))))
                 frames = np.array(frames)
                 int_spectra = np.mean(frames, axis=0)
                 try:
@@ -465,18 +533,26 @@ class TimeStreamGenerator:
                                             alpha=power_meter.alpha,
                                             receiver_sample_rate=receiver.sample_rate,
                                             n_channels=receiver.n_freq_channels,
-                                            tau=1 / receiver.sample_rate,
+                                            del_t=1 / receiver.sample_rate,
                                             n_times=self.n_frames
                                             )
-            base_measured_powers = power_meter.measure_cw_power(cw_source_fluctuations)
-            base_measured_powers = power_meter.add_white_noise(base_measured_powers) # normalised as measuring 
-            base_measured_powers *= pm_gains
+            cw_pm_powers = cw_source_fluctuations**2
+            cw_pm_powers = power_meter.add_white_noise(cw_pm_powers) # adds white noise to the powers
+            cw_pm_powers *= pm_gains
+            cw_pm_amplitudes = np.sqrt(cw_pm_powers) # convert back to amplitude
 
-            pm_zero_level_measurements = np.array([power_meter.measure_cw_power(0) for i in range(power_meter.sample_rate*5)])
-            pm_zero_level_measurements = power_meter.add_white_noise(pm_zero_level_measurements)
+            # need to measure the cw_amplitudes and only select based on the receiver sample rate
 
-            split_cw_amplitudes = np.array_split(base_measured_powers, len(pm_cw_measurements))
-            pm_cw_measurements = np.array([np.mean(s) for s in split_cw_amplitudes])
+            pm_measurements = power_meter.measure_cw_power(cw_pm_amplitudes) # voltages
+            
+            # add function to the power meter based on the time-step to seperate and feedback array
+            pm_measurements = power_meter.return_pm_samples(pm_measurements,
+                                                            self.delta_t)
+
+            pm_measurements = np.array_split(pm_measurements, len(pm_cw_measurements))
+            pm_cw_measurements = np.array([np.mean(s) for s in pm_measurements]) # returns averaged voltage
+
+            #pm_zero_level_measurements = power_meter.measure_cw_power(0)
 
         if save_data:
             with h5py.File(savepath+title, mode='w') as file:
@@ -497,7 +573,7 @@ class TimeStreamGenerator:
                 if power_meter is not None:
                     data.create_dataset('PM_Measurements', data=pm_cw_measurements, dtype=pm_cw_measurements.dtype)
                     simulation_params.create_dataset('PM_Gains', data=pm_gains, dtype=pm_gains.dtype)
-                    data.create_dataset('PM_Zero_Level_Measurements', data=pm_zero_level_measurements, dtype=pm_zero_level_measurements.dtype)
+                    #data.create_dataset('PM_Zero_Level_Measurements', data=pm_zero_level_measurements, dtype=pm_zero_level_measurements.dtype)
 
         if save_into_object:
             self.receiver_gains = system_gains
@@ -529,73 +605,6 @@ class TimeStreamGenerator:
         print(self.n_integrations, ' - n_integrations')
         print(self.n_frames, ' - nframes')
         print(integrated_spectra.shape, ' - integrated spectra')
-
-        if return_list:
-            rt_list = []
-            rt_list.append(system_gains)
-            rt_list.append(cw_amplitudes)
-            rt_list.append(integrated_spectra)
-            rt_list.append(spectra_times)
-            rt_list.append(frame_times)
-            rt_list.append(obs_freqs_mhz)
-            if switching and (power_meter is not None):
-                rt_list.append(switches_list)
-                rt_list.append(pm_cw_measurements)
-                rt_list.append(pm_gains)
-                d = {'receiver_gains':0,
-                     'cw_amplitudes':1,
-                     'integrated_spectra':2,
-                     'times':3,
-                     'frame_times':4,
-                     'frequencies_mhz':5,
-                     'switch_list':6,
-                     'pm_measurements':7,
-                     'pm_gains':8,
-                     'dictionary':9}
-                rt_list.append(d)
-                return rt_list
-            
-            elif switching:
-                rt_list.append(switches_list)
-                rt_list.append(pm_cw_measurements)
-                rt_list.append(pm_gains)
-                d = {'receiver_gains':0,
-                     'cw_amplitudes':1,
-                     'integrated_spectra':2,
-                     'times':3,
-                     'frame_times':4,
-                     'frequencies_mhz':5,
-                     'switch_list':6,
-                     'dictionary':7}
-                rt_list.append(d)
-                return rt_list
-            
-            elif power_meter is not None:
-                rt_list.append(pm_cw_measurements)
-                rt_list.append(pm_gains)
-                d = {'receiver_gains':0,
-                     'cw_amplitudes':1,
-                     'integrated_spectra':2,
-                     'times':3,
-                     'frame_times':4,
-                     'frequencies_mhz':5,
-                     'pm_measurements':6,
-                     'pm_gains':7,
-                     'dictionary':8}
-                rt_list.append(d)
-                return rt_list
-            
-            else:
-                d = {'receiver_gains':0,
-                     'cw_amplitudes':1,
-                     'integrated_spectra':2,
-                     'times':3,
-                     'frame_times':4,
-                     'frequencies_mhz':5,
-                     'dictionary':6}
-                rt_list.append(d)
-                return rt_list
-
 
         pass
     
@@ -607,25 +616,29 @@ class TimeStreamGenerator:
         longer simulated times can be ran.
         """
         print('   generating data')
+        t_0 = time.time()
         n_ints = int(np.ceil(self.n_integrations))
         dt_int = self.integration_time
         if receiver.beta == 0:
             system_gains = 1 + generate_F_psd(f_k=receiver.characteristic_frequency, alpha=receiver.alpha, receiver_sample_rate=receiver.sample_rate,
-                                              n_times=n_ints, tau=dt_int, n_channels=receiver.n_freq_channels) # n_frames
+                                              n_times=n_ints, del_t=dt_int, n_channels=receiver.n_freq_channels) # n_frames
 
             system_gains = np.abs(system_gains)
         else:
             system_gains = 1 + generate_psd(receiver.characteristic_frequency, alpha=receiver.alpha, beta=receiver.beta,
-                                            receiver_sample_rate=receiver.sample_rate, n_times=n_ints, tau=dt_int,
+                                            receiver_sample_rate=receiver.sample_rate, n_times=n_ints, del_t=dt_int,
                                             n_channels=receiver.n_freq_channels)
         
         if cw_source is None:
             cw_amplitudes = np.zeros(shape=system_gains.shape)
         else:
             cw_source.set_baseband_frequency(receiver)
-            cw_amplitudes = cw_source.initial_cw_amplitude * (1 + generate_F_psd(f_k = cw_source.characteristic_frequency, alpha=cw_source.alpha,
+
+            cw_source_fluctuations = 1 + generate_F_psd(f_k = cw_source.characteristic_frequency, alpha=cw_source.alpha,
                                                                                  receiver_sample_rate=receiver.sample_rate, n_times = self.n_frames,
-                                                                                 tau=self.delta_t, n_channels=receiver.n_freq_channels))
+                                                                                 del_t=self.delta_t, n_channels=receiver.n_freq_channels)
+            cw_source_fluctuations = np.abs(cw_source_fluctuations)
+            cw_amplitudes = cw_source.initial_cw_amplitude * cw_source_fluctuations
             cw_amplitudes = np.abs(cw_amplitudes)
 
         integrated_spectra = np.ones(shape=(int(np.ceil(self.n_integrations)), receiver.n_freq_channels))
@@ -636,9 +649,10 @@ class TimeStreamGenerator:
                                                   total_time=self.simulation_time,
                                                   switch_obs_fraction=switch_obs_fraction,
                                                   integration_time=self.integration_time)
-        
+            
+        split_cw_amps = np.array_split(cw_amplitudes, np.ceil(int(self.n_integrations)))
+
         for i in range(np.ceil(int(self.n_integrations))): # mind the ceiling and the fact this isnt an integer. See how it works with indices
-            print(i)
             if switching:
                 switch_index = switches_list[i]
                 obs_source = switch_sources[switch_index]
@@ -648,16 +662,18 @@ class TimeStreamGenerator:
                 #g_list = system_gains[int(i*self.frames_per_integration): int(self.n_frames-1)]
                 #print('final g_list shape - ', g_list.shape)
                 #print('final i = ', i)
-                cw_amp_list = cw_amplitudes[int(i*self.frames_per_integration): int(self.n_frames-1)]
+                #cw_amp_list = cw_amplitudes[int(i*self.frames_per_integration): int(self.n_frames-1)]
+                cw_amp_list = split_cw_amps[i]
                 g_list = [1] * len(cw_amp_list)
             else:
                 #g_list = system_gains[int(i*self.frames_per_integration): int(i*self.frames_per_integration + self.frames_per_integration)]
-                cw_amp_list = cw_amplitudes[int(i*self.frames_per_integration): int(i*self.frames_per_integration + self.frames_per_integration)]
+                #cw_amp_list = cw_amplitudes[int(i*self.frames_per_integration): int(i*self.frames_per_integration + self.frames_per_integration)]
+                cw_amp_list = split_cw_amps[i]
                 g_list = [1] * len(cw_amp_list)
             
             with multiprocessing.Pool() as pool:
                 frames = pool.starmap(compute_frame, zip(g_list, cw_amp_list, itertools.repeat(receiver),
-                                                         itertools.repeat(cw_source), itertools.repeat(obs_source)))
+                                                         itertools.repeat(cw_source), itertools.repeat(obs_source), np.arange(len(g_list))))
                 frames = np.array(frames)
                 int_spectra = np.mean(frames, axis=0)
                 int_spectra *= system_gains[i]
@@ -666,6 +682,7 @@ class TimeStreamGenerator:
                 except:
                     #print('additional i = ', i)
                     pass
+                del frames
             pass
         
 
@@ -680,15 +697,26 @@ class TimeStreamGenerator:
                                             alpha=power_meter.alpha,
                                             receiver_sample_rate=receiver.sample_rate,
                                             n_channels=receiver.n_freq_channels,
-                                            tau=1 / receiver.sample_rate,
+                                            del_t=1 / receiver.sample_rate,
                                             n_times=self.n_frames
                                             )
-            base_measured_powers = power_meter.measure_cw_power(cw_amplitudes)
-            base_measured_powers = power_meter.add_white_noise(base_measured_powers)
-            base_measured_powers *= pm_gains
+            cw_pm_powers = cw_source_fluctuations**2
+            cw_pm_powers = power_meter.add_white_noise(cw_pm_powers) # adds white noise to the powers
+            cw_pm_powers *= pm_gains
+            cw_pm_amplitudes = np.sqrt(cw_pm_powers) # convert back to amplitude
 
-            split_cw_amplitudes = np.array_split(base_measured_powers, len(pm_cw_measurements))
-            pm_cw_measurements = np.array([np.mean(s) for s in split_cw_amplitudes])
+            # need to measure the cw_amplitudes and only select based on the receiver sample rate
+
+            pm_measurements = power_meter.measure_cw_power(cw_pm_amplitudes) # voltages
+            
+            # add function to the power meter based on the time-step to seperate and feedback array
+            pm_measurements = power_meter.return_pm_samples(pm_measurements,
+                                                            self.delta_t)
+
+            pm_measurements = np.array_split(pm_measurements, len(pm_cw_measurements))
+            pm_cw_measurements = np.array([np.mean(s) for s in pm_measurements]) # returns averaged voltage
+
+            #pm_zero_level_measurements = power_meter.measure_cw_power(0)
 
         if save_data:
             with h5py.File(savepath+title, mode='w') as file:
@@ -709,6 +737,7 @@ class TimeStreamGenerator:
                 if power_meter is not None:
                     data.create_dataset('PM_Measurements', data=pm_cw_measurements, dtype=pm_cw_measurements.dtype)
                     simulation_params.create_dataset('PM_Gains', data=pm_gains, dtype=pm_gains.dtype)
+                    #data.create_dataset('PM_Zero_Level_Measurements', data=pm_zero_level_measurements, dtype=pm_zero_level_measurements.dtype)
 
         if save_into_object:
             self.receiver_gains = system_gains
@@ -742,73 +771,7 @@ class TimeStreamGenerator:
         print(self.n_integrations, ' - n_integrations')
         print(self.n_frames, ' - nframes')
         print(integrated_spectra.shape, ' - integrated spectra')
-        
-        if return_list:
-            rt_list = []
-            rt_list.append(system_gains)
-            rt_list.append(cw_amplitudes)
-            rt_list.append(integrated_spectra)
-            rt_list.append(spectra_times)
-            rt_list.append(frame_times)
-            rt_list.append(obs_freqs_mhz)
-            if switching and (power_meter is not None):
-                rt_list.append(switches_list)
-                rt_list.append(pm_cw_measurements)
-                rt_list.append(pm_gains)
-                d = {'receiver_gains':0,
-                     'cw_amplitudes':1,
-                     'integrated_spectra':2,
-                     'times':3,
-                     'frame_times':4,
-                     'frequencies_mhz':5,
-                     'switch_list':6,
-                     'pm_measurements':7,
-                     'pm_gains':8,
-                     'dictionary':9}
-                rt_list.append(d)
-                return rt_list
-            
-            elif switching:
-                rt_list.append(switches_list)
-                rt_list.append(pm_cw_measurements)
-                rt_list.append(pm_gains)
-                d = {'receiver_gains':0,
-                     'cw_amplitudes':1,
-                     'integrated_spectra':2,
-                     'times':3,
-                     'frame_times':4,
-                     'frequencies_mhz':5,
-                     'switch_list':6,
-                     'dictionary':7}
-                rt_list.append(d)
-                return rt_list
-            
-            elif power_meter is not None:
-                rt_list.append(pm_cw_measurements)
-                rt_list.append(pm_gains)
-                d = {'receiver_gains':0,
-                     'cw_amplitudes':1,
-                     'integrated_spectra':2,
-                     'times':3,
-                     'frame_times':4,
-                     'frequencies_mhz':5,
-                     'pm_measurements':6,
-                     'pm_gains':7,
-                     'dictionary':8}
-                rt_list.append(d)
-                return rt_list
-            
-            else:
-                d = {'receiver_gains':0,
-                     'cw_amplitudes':1,
-                     'integrated_spectra':2,
-                     'times':3,
-                     'frame_times':4,
-                     'frequencies_mhz':5,
-                     'dictionary':6}
-                rt_list.append(d)
-                return rt_list
-
+        print(f'TOD took {(time.time() - t_0) / 60} minutes')
         pass
 
     def read_in_from_h5py(self, filepath):
